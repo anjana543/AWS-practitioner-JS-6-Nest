@@ -1,55 +1,83 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { v4 } from 'uuid';
 
+import { Client } from 'pg';
 import { Cart } from '../models';
 
 @Injectable()
 export class CartService {
-  private userCarts: Record<string, Cart> = {};
+  constructor(@Inject('DATABASE_CONNECTION') private client: Client) {}
 
-  findByUserId(userId: string): Cart {
-    return this.userCarts[ userId ];
+  async findByUserId(userId: string): Promise<Cart> {
+    const queryResult = await this.client.query(
+      `SELECT carts.id,
+        COALESCE(ARRAY_AGG(json_build_object('product_id', cart_items.product_id, 'count', cart_items.count)) FILTER (WHERE cart_items.cart_id IS NOT NULL), ARRAY[]::json[]) AS items
+        FROM carts
+        LEFT JOIN cart_items ON carts.id = cart_items.cart_id
+        WHERE carts.user_id = $1
+        GROUP BY carts.id;`,
+      [userId],
+    );
+
+    return queryResult.rows[0];
   }
 
-  createByUserId(userId: string) {
-    const id = v4(v4());
-    const userCart = {
-      id,
-      items: [],
-    };
+  async createByUserId(userId: string): Promise<Cart> {
+    const id = v4();
+    const date = new Date();
 
-    this.userCarts[ userId ] = userCart;
+    await this.client.query(
+      `INSERT INTO carts (id, user_id, created_at, updated_at, status) VALUES ($1, $2, $3, $4, $5);`,
+      [id, userId, date.toISOString(), date.toISOString(), 'OPEN'],
+    );
 
-    return userCart;
+    return await this.findByUserId(userId);
   }
 
-  findOrCreateByUserId(userId: string): Cart {
-    const userCart = this.findByUserId(userId);
+  async findOrCreateByUserId(userId: string): Promise<Cart> {
+    const cart = await this.findByUserId(userId);
 
-    if (userCart) {
-      return userCart;
+    console.log('cart', cart);
+    if (!cart) {
+      return await this.createByUserId(userId);
     }
 
-    return this.createByUserId(userId);
+    return cart;
   }
 
-  updateByUserId(userId: string, { items }: Cart): Cart {
-    const { id, ...rest } = this.findOrCreateByUserId(userId);
+  async updateByUserId(
+    userId: string,
+    cartItem: { product_id: string; count: number },
+  ): Promise<Cart> {
+    await this.client.query('BEGIN');
 
-    const updatedCart = {
-      id,
-      ...rest,
-      items: [ ...items ],
+    const res = await this.client.query(
+      'SELECT id FROM carts WHERE user_id = $1',
+      [userId],
+    );
+
+    if (res.rows.length > 0) {
+      const cartId = res.rows[0].id;
+
+      const { product_id, count } = cartItem;
+
+      await this.client.query(
+        'UPDATE cart_items SET product_id = $1, count = $2 WHERE cart_id = $3',
+        [product_id, count, cartId],
+      );
+
+      // Commit transaction
+      await this.client.query('COMMIT');
+    } else {
+      await this.client.query('ROLLBACK');
+      throw new Error('Invalid user_id');
     }
 
-    this.userCarts[ userId ] = { ...updatedCart };
-
-    return { ...updatedCart };
+    return this.findByUserId(userId);
   }
 
-  removeByUserId(userId): void {
-    this.userCarts[ userId ] = null;
+  async removeByUserId(userId: string): Promise<void> {
+    await this.client.query('DELETE FROM carts WHERE user_id = $1', [userId]);
   }
-
 }

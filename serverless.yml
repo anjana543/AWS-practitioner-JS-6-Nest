@@ -1,11 +1,21 @@
-service: serverless-example
+service: nestjs-service
 
 plugins:
   - serverless-offline
+  - serverless-dotenv-plugin
 
 provider:
   name: aws
-  runtime: nodejs14.x
+  runtime: nodejs18.x
+  stage: dev
+  region: us-east-2
+  vpc:
+   securityGroupIds:
+     - sg-03239aa4358555eaf
+   subnetIds:
+     - subnet-5387291f
+     - subnet-55aaa33d
+     - subnet-ed276197
 
 functions:
   main:
@@ -14,6 +24,8 @@ functions:
       - http:
           method: ANY
           path: /
+          cors: true
       - http:
           method: ANY
           path: '{proxy+}'
+          cors: true
